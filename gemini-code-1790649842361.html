@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Spider Swing - Realtime Multiplayer</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: Arial, sans-serif; user-select: none; }
+    
+    /* スタート画面 */
+    #start-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      color: #fff; z-index: 100; cursor: pointer;
+    }
+    #start-overlay h1 { font-size: 36px; color: #ff3333; margin-bottom: 10px; text-shadow: 0 0 10px #ff0000; }
+    #start-overlay p { font-size: 18px; color: #ffeb3b; background: rgba(255,255,255,0.15); padding: 12px 24px; border-radius: 30px; }
+    #name-input-start { padding: 10px 15px; font-size: 16px; border-radius: 5px; border: none; margin-bottom: 15px; text-align: center; }
+
+    /* UI表示 */
+    #ui {
+      position: absolute; top: 15px; left: 15px;
+      color: #ffffff; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.9);
+      font-size: 14px; pointer-events: none; z-index: 10;
+      background: rgba(0, 0, 0, 0.6); padding: 12px 16px; border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .key { background: #ffcc00; color: #111; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+
+    /* ゴールUI */
+    #goal-modal {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.85); display: none; flex-direction: column;
+      justify-content: center; align-items: center; color: #fff; z-index: 200;
+    }
+    #goal-box {
+      background: #111; border: 2px solid #ffea00; border-radius: 12px;
+      padding: 20px 28px; text-align: center; max-width: 450px; width: 90%;
+      box-shadow: 0 0 20px rgba(255,234,0,0.5);
+    }
+    button {
+      padding: 10px 20px; font-size: 16px; font-weight: bold; background: #ff3333;
+      color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-top: 15px;
+    }
+    button:hover { background: #ff6666; }
+  </style>
+  <!-- Three.js & Supabase JS SDK -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-javascript@2"></script>
+</head>
+<body>
+
+  <div id="start-overlay">
+    <h1>🕷️ MULTIPLAYER SPIDER SWING</h1>
+    <input type="text" id="name-input-start" placeholder="プレイヤー名を入力" value="スパイダーマン" onclick="event.stopPropagation()">
+    <p onclick="startGame()">👉 ここをクリックしてゲームスタート！</p>
+  </div>
+
+  <div id="ui">
+    <h3 style="margin:0 0 6px 0; color:#ff3333;">🕷️ 3D Spider Swing (Multiplayer)</h3>
+    <div id="info" style="margin-bottom:6px; font-size:15px; font-weight:bold;">
+      距離: <span id="dist-txt" style="color:#ffea00;">0</span> / 1000 m | タイム: <span id="time-txt" style="color:#00ffff;">0.0</span>s
+    </div>
+    <div style="margin-bottom:6px; font-size:14px; font-weight:bold; color:#ffeb3b;">
+      💎 集めたストーン: <span id="stone-count">0</span> / 5 | 🟢 他のプレイヤー: <span id="online-count">0</span> 人
+    </div>
+    <p style="margin:3px 0;"><span class="key">Space</span> / <span class="key">Shift</span> / <span class="key">長押し</span>: 糸を発射</p>
+    <p style="margin:3px 0;"><span class="key">A</span>: 左移動 ⬅️ | <span class="key">D</span>: 右移動 ➡️ | <span class="key">W</span>: 加速 | <span class="key">S</span>: 減速</p>
+  </div>
+
+  <!-- ゴール画面 -->
+  <div id="goal-modal">
+    <div id="goal-box">
+      <h2 style="color:#ffea00; margin-top:0;">🏁 MISSION COMPLETE!</h2>
+      <p id="result-summary" style="font-size:16px; margin-bottom:12px;"></p>
+      <button onclick="location.reload()">もう一度遊ぶ</button>
+    </div>
+  </div>
+
+  <script>
+    // --- Supabase 設定 ---
+    const SUPABASE_URL = 'https://enecurkwbyweezedznfe.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_TOPsM7d05X-EXyeF4rN14g_ZkkCS-Rh';
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    const myPlayerId = Math.random().toString(36).substring(2, 9);
+    let myName = 'スパイダーマン';
+
+    let isGameStarted = false;
+    let isFinished = false;
+    let startTime = 0;
+    let elapsedTime = 0;
+    let collectedStones = 0;
+
+    // --- 1. シーン・カメラ・レンダラー ---
+    const scene = new THREE.Scene();
+    const dayColor = new THREE.Color(0x7ec0ee);
+    scene.background = dayColor.clone();
+    scene.fog = new THREE.FogExp2(0x7ec0ee, 0.008);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1200);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // --- 2. ライト ---
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.position.set(50, 100, 30);
+    scene.add(dirLight);
+
+    // --- 3. 街並み生成 ---
+    function createBuildingTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128; canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#3a3d4d'; ctx.fillRect(0, 0, 128, 256);
+      for (let y = 10; y < 256; y += 20) {
+        for (let x = 10; x < 128; x += 16) {
+          ctx.fillStyle = Math.random() > 0.2 ? '#88bbdd' : '#557799';
+          ctx.fillRect(x, y, 10, 12);
+        }
+      }
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(1, 4);
+      return texture;
+    }
+
+    const buildingMat = new THREE.MeshLambertMaterial({ map: createBuildingTexture() });
+    const groundGeo = new THREE.PlaneGeometry(600, 3000);
+    const groundMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2; ground.position.z = 1000;
+    scene.add(ground);
+
+    const buildings = [];
+    for (let i = 0; i < 90; i++) {
+      const h = Math.random() * 50 + 35; const w = Math.random() * 12 + 12;
+      const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), buildingMat);
+      const x = (Math.random() - 0.5) * 120; const z = i * 22;
+      building.position.set(x, h / 2, z);
+      building.userData = { width: w, height: h, depth: w };
+      scene.add(building); buildings.push(building);
+    }
+
+    // --- 4. インフィニティ・ストーン (5種) ---
+    const stoneTypes = [
+      { name: 'リアリティ', color: 0xff0000, z: 180 },
+      { name: 'タイム', color: 0x00ff00, z: 360 },
+      { name: 'パワー', color: 0x9900ff, z: 540 },
+      { name: 'マインド', color: 0xffff00, z: 720 },
+      { name: 'スペース', color: 0x0099ff, z: 880 }
+    ];
+
+    const stones = [];
+    stoneTypes.forEach(s => {
+      const geo = new THREE.OctahedronGeometry(1.5, 0);
+      const mat = new THREE.MeshStandardMaterial({ color: s.color, emissive: s.color, emissiveIntensity: 0.6, metalness: 0.8, roughness: 0.2 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set((Math.random() - 0.5) * 40, 15 + Math.random() * 15, s.z);
+      mesh.userData = { collected: false };
+      scene.add(mesh); stones.push(mesh);
+    });
+
+    // --- 5. ゴールゲート ---
+    const goalGroup = new THREE.Group();
+    const frameGeo = new THREE.TorusGeometry(12, 1, 16, 100);
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0xffea00, metalness: 0.9, roughness: 0.1 });
+    goalGroup.add(new THREE.Mesh(frameGeo, frameMat));
+    const portalGeo = new THREE.CircleGeometry(11, 32);
+    const portalMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+    goalGroup.add(new THREE.Mesh(portalGeo, portalMat));
+    goalGroup.position.set(0, 15, 1000);
+    scene.add(goalGroup);
+
+    // --- 6. スパイダーマンモデル作成関数 ---
+    function createSpiderManModel(isOther = false) {
+      const group = new THREE.Group();
+      const bodyColor = isOther ? 0x00aa44 : 0xdd0000; // 他プレイヤーは緑系のスーツ
+
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.65, 16, 16), new THREE.MeshLambertMaterial({ color: bodyColor }));
+      head.position.y = 1.4; group.add(head);
+
+      const eyeGeo = new THREE.BoxGeometry(0.28, 0.14, 0.1);
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const leftEye = new THREE.Mesh(eyeGeo, eyeMat); leftEye.position.set(-0.2, 1.45, 0.58); leftEye.rotation.z = 0.25; group.add(leftEye);
+      const rightEye = new THREE.Mesh(eyeGeo, eyeMat); rightEye.position.set(0.2, 1.45, 0.58); rightEye.rotation.z = -0.25; group.add(rightEye);
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.1, 0.6), new THREE.MeshLambertMaterial({ color: bodyColor }));
+      torso.position.y = 0.55; group.add(torso);
+
+      const blueMat = new THREE.MeshLambertMaterial({ color: 0x0022cc });
+      const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.0, 0.35), blueMat); leftLeg.position.set(-0.25, -0.4, 0); group.add(leftLeg);
+      const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.0, 0.35), blueMat); rightLeg.position.set(0.25, -0.4, 0); group.add(rightLeg);
+
+      return group;
+    }
+
+    const player = createSpiderManModel(false);
+    player.position.set(0, 25, 0);
+    scene.add(player);
+
+    let velocity = new THREE.Vector3(0, 0, 0.8);
+    const gravity = -0.015;
+
+    // --- 7. クモの糸 ---
+    let isSwinging = false; let hookPoint = null; let ropeLength = 0;
+    const ropeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    ropeMesh.visible = false; scene.add(ropeMesh);
+
+    function updateRopeMesh(mesh, p1, p2, active) {
+      if (active && p2) {
+        mesh.visible = true;
+        mesh.position.copy(new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5));
+        mesh.scale.set(1, p1.distanceTo(p2), 1);
+        const dir = new THREE.Vector3().subVectors(p2, p1).normalize();
+        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      } else {
+        mesh.visible = false;
+      }
+    }
+
+    const targetRing = new THREE.Mesh(new THREE.RingGeometry(1.5, 2.5, 32), new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide }));
+    targetRing.rotation.x = Math.PI / 2; targetRing.visible = false; scene.add(targetRing);
+
+    // --- 8. マルチプレイ同期ロジック (Supabase Realtime) ---
+    const otherPlayers = {}; // id -> { mesh, ropeMesh, lastUpdate }
+
+    const channel = supabaseClient.channel('spider-room');
+
+    channel
+      .on('broadcast', { event: 'player-pos' }, ({ payload }) => {
+        if (payload.id === myPlayerId) return;
+        updateOtherPlayer(payload);
+      })
+      .subscribe();
+
+    function updateOtherPlayer(data) {
+      if (!otherPlayers[data.id]) {
+        const mesh = createSpiderManModel(true);
+        const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 1, 8), new THREE.MeshBasicMaterial({ color: 0x88ffff }));
+        scene.add(mesh);
+        scene.add(rope);
+        otherPlayers[data.id] = { mesh: mesh, rope: rope, lastUpdate: Date.now() };
+      }
+
+      const p = otherPlayers[data.id];
+      p.mesh.position.set(data.x, data.y, data.z);
+      p.mesh.rotation.y = data.rotY;
+      p.lastUpdate = Date.now();
+
+      const hook = data.isSwinging ? new THREE.Vector3(data.hx, data.hy, data.hz) : null;
+      updateRopeMesh(p.rope, p.mesh.position, hook, data.isSwinging);
+
+      updateOnlineCount();
+    }
+
+    // 非アクティブ（5秒以上通信がない）プレイヤーを削除
+    setInterval(() => {
+      const now = Date.now();
+      Object.keys(otherPlayers).forEach(id => {
+        if (now - otherPlayers[id].lastUpdate > 5000) {
+          scene.remove(otherPlayers[id].mesh);
+          scene.remove(otherPlayers[id].rope);
+          delete otherPlayers[id];
+          updateOnlineCount();
+        }
+      });
+    }, 2000);
+
+    function updateOnlineCount() {
+      document.getElementById('online-count').innerText = Object.keys(otherPlayers).length;
+    }
+
+    // 自分の位置情報を他プレイヤーへ定期送信 (50ms毎 = 秒間20回)
+    setInterval(() => {
+      if (!isGameStarted || isFinished) return;
+      channel.send({
+        type: 'broadcast',
+        event: 'player-pos',
+        payload: {
+          id: myPlayerId,
+          name: myName,
+          x: player.position.x,
+          y: player.position.y,
+          z: player.position.z,
+          rotY: player.rotation.y,
+          isSwinging: isSwinging,
+          hx: hookPoint ? hookPoint.x : 0,
+          hy: hookPoint ? hookPoint.y : 0,
+          hz: hookPoint ? hookPoint.z : 0
+        }
+      });
+    }, 50);
+
+    // --- 9. ゲームスタート & 操作 ---
+    function startGame() {
+      const input = document.getElementById('name-input-start');
+      if (input && input.value.trim()) myName = input.value.trim();
+      const overlay = document.getElementById('start-overlay');
+      if (overlay) overlay.style.display = 'none';
+      isGameStarted = true;
+      startTime = Date.now();
+      window.focus();
+    }
+
+    const keys = { w: false, a: false, s: false, d: false, swing: false };
+
+    function handleKeyDown(e) {
+      const k = e.key ? e.key.toLowerCase() : ''; const code = e.code || '';
+      if (k === 'w' || code === 'KeyW' || code === 'ArrowUp') keys.w = true;
+      if (k === 'a' || code === 'KeyA' || code === 'ArrowLeft') keys.a = true;
+      if (k === 's' || code === 'KeyS' || code === 'ArrowDown') keys.s = true;
+      if (k === 'd' || code === 'KeyD' || code === 'ArrowRight') keys.d = true;
+
+      if (k === ' ' || code === 'Space' || k === 'shift' || code.includes('Shift')) {
+        if (!keys.swing && !isFinished) startSwing();
+        keys.swing = true; e.preventDefault();
+      }
+    }
+
+    function handleKeyUp(e) {
+      const k = e.key ? e.key.toLowerCase() : ''; const code = e.code || '';
+      if (k === 'w' || code === 'KeyW' || code === 'ArrowUp') keys.w = false;
+      if (k === 'a' || code === 'KeyA' || code === 'ArrowLeft') keys.a = false;
+      if (k === 's' || code === 'KeyS' || code === 'ArrowDown') keys.s = false;
+      if (k === 'd' || code === 'KeyD' || code === 'ArrowRight') keys.d = false;
+
+      if (k === ' ' || code === 'Space' || k === 'shift' || code.includes('Shift')) {
+        keys.swing = false; endSwing();
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown); window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('mousedown', () => { if (!isGameStarted) startGame(); if(!isFinished) startSwing(); });
+    window.addEventListener('mouseup', endSwing);
+
+    function findBestTarget() {
+      let bestBuilding = null; let minScore = Infinity;
+      buildings.forEach(b => {
+        if (b.position.z > player.position.z - 5 && b.position.z < player.position.z + 120) {
+          const dist = player.position.distanceTo(b.position);
+          const score = dist + Math.abs(b.position.x - player.position.x) * 1.2;
+          if (score < minScore && dist < 100) { minScore = score; bestBuilding = b; }
+        }
+      });
+      return bestBuilding ? new THREE.Vector3(bestBuilding.position.x, bestBuilding.userData.height, bestBuilding.position.z) : null;
+    }
+
+    function startSwing() {
+      let target = findBestTarget();
+      if (!target) {
+        target = new THREE.Vector3(player.position.x + (velocity.x * 12), player.position.y + 28, player.position.z + 45);
+      }
+      hookPoint = target; ropeLength = player.position.distanceTo(hookPoint); isSwinging = true;
+    }
+
+    function endSwing() { isSwinging = false; hookPoint = null; ropeMesh.visible = false; }
+
+    function checkBuildingCollisions() {
+      const radius = 0.8;
+      buildings.forEach(b => {
+        const w = b.userData.width / 2 + radius; const h = b.userData.height; const d = b.userData.depth / 2 + radius;
+        if (player.position.y < h + 0.5 && player.position.x > b.position.x - w && player.position.x < b.position.x + w &&
+            player.position.z > b.position.z - d && player.position.z < b.position.z + d) {
+          const overlapX1 = player.position.x - (b.position.x - w); const overlapX2 = (b.position.x + w) - player.position.x;
+          const overlapZ1 = player.position.z - (b.position.z - d); const overlapZ2 = (b.position.z + d) - player.position.z;
+          const minOverlap = Math.min(overlapX1, overlapX2, overlapZ1, overlapZ2);
+          if (minOverlap === overlapX1) { player.position.x = b.position.x - w; velocity.x = -Math.abs(velocity.x) * 0.5; }
+          else if (minOverlap === overlapX2) { player.position.x = b.position.x + w; velocity.x = Math.abs(velocity.x) * 0.5; }
+          else if (minOverlap === overlapZ1) { player.position.z = b.position.z - d; velocity.z = -Math.abs(velocity.z) * 0.5; }
+          else if (minOverlap === overlapZ2) { player.position.z = b.position.z + d; velocity.z = Math.abs(velocity.z) * 0.5; }
+        }
+      });
+    }
+
+    function checkStoneCollisions() {
+      stones.forEach(s => {
+        if (!s.userData.collected && player.position.distanceTo(s.position) < 3.0) {
+          s.userData.collected = true; s.visible = false;
+          collectedStones++;
+          document.getElementById('stone-count').innerText = collectedStones;
+        }
+      });
+    }
+
+    // --- 10. メインアニメーションループ ---
+    function animate() {
+      requestAnimationFrame(animate);
+
+      if (isGameStarted && !isFinished) {
+        elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+        document.getElementById('time-txt').innerText = elapsedTime;
+
+        // ★Aで左(+X)、Dで右(-X)★
+        if (keys.a) velocity.x += 0.06;
+        if (keys.d) velocity.x -= 0.06;
+        if (keys.w) velocity.z += 0.03;
+        if (keys.s) velocity.z -= 0.02;
+
+        velocity.y += gravity;
+
+        const target = findBestTarget();
+        if (target && !isSwinging) {
+          targetRing.position.copy(target); targetRing.position.y += 0.2; targetRing.visible = true;
+        } else { targetRing.visible = false; }
+
+        if (isSwinging && hookPoint) {
+          const ropeVec = new THREE.Vector3().subVectors(player.position, hookPoint);
+          if (ropeVec.length() > ropeLength) {
+            ropeVec.normalize();
+            velocity.add(ropeVec.multiplyScalar(-0.045));
+          }
+        }
+
+        updateRopeMesh(ropeMesh, player.position, hookPoint, isSwinging);
+
+        velocity.x *= 0.94; velocity.z = Math.max(0.3, velocity.z * 0.995);
+        player.position.add(velocity);
+
+        checkBuildingCollisions();
+        checkStoneCollisions();
+
+        stones.forEach(s => { if (s.visible) s.rotation.y += 0.04; });
+
+        player.rotation.y = Math.atan2(velocity.x, velocity.z);
+        if (player.position.y < 1.5) { player.position.y = 1.5; velocity.y = 0; velocity.z = Math.max(velocity.z, 0.6); }
+
+        if (player.position.z >= 1000) {
+          isFinished = true;
+          endSwing();
+          showGoalScreen();
+        }
+      }
+
+      camera.position.set(player.position.x * 0.6, player.position.y + 6, player.position.z - 18);
+      camera.lookAt(player.position.x, player.position.y + 2, player.position.z + 20);
+
+      document.getElementById('dist-txt').innerText = Math.min(1000, Math.floor(player.position.z));
+      renderer.render(scene, camera);
+    }
+
+    function showGoalScreen() {
+      document.getElementById('goal-modal').style.display = 'flex';
+      document.getElementById('result-summary').innerHTML = 
+        `プレイヤー名: <b style="color:#ffea00">${myName}</b><br>` +
+        `クリアタイム: <b style="color:#00ffff">${elapsedTime}秒</b><br>` +
+        `獲得ストーン: <b style="color:#ffeb3b">${collectedStones} / 5 個</b>`;
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
